@@ -1,0 +1,60 @@
+---
+title: "Performing PCA on game rating data"
+output:
+  html_document: default
+  html_notebook: default
+---
+
+This notebook covers the cleaning and subsequent PCA analysis of the elite user ratings data.  
+
+**Credit to Matthew Borthwick for scraping and providing this data.**  
+**Data Source:  boardgamegeek.com**
+
+
+Our tasks are as follows:
+
+* Reshape the data such that it is in a format that PCA likes
+* Impute values for the NA's
+* Perform PCA
+* Perform K-means clustering using the principal components
+
+Lets first download the data and take a look.
+
+```{r, warning = FALSE, message = FALSE, results = 'asis'}
+
+source("requirements.R")
+
+elite <- read_csv("Data/boardgame-elite-users.csv") %>% rename(userID = `Compiled from boardgamegeek.com by Matt Borthwick`)
+
+titles <- read_csv("Data/boardgame-titles.csv") %>% rename(gameID = `boardgamegeek.com game ID`)
+
+elite[1:5,] %>% kable("html") %>%
+                kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover"))
+
+titles[1:5,] %>% kable("html") %>%
+                 kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover"))
+
+```
+
+##**Data Cleaning**
+
+We ultimately want our data to contain a **single row for each user** where the columns for that user represent their rating on **each game among all games**
+
+To get the data in this format, we lean on dplyr, and the acast() function in particular, which takes a formula as an argument which specifies which variables you want to define the rows and columns, and another argument (value.var) that specifies what value should occupy the cells of the reshaped dataframe.  
+
+```{r, warning = FALSE, message = FALSE}
+elite <- elite %>% group_by(gameID) %>% 
+              mutate(avg_rating = mean(rating), freq = n()) %>%  
+              left_join(titles) %>%
+              select(userID, gameID, rating) %>%
+              spread(gameID, rating)
+
+elite[1:5, 1:15] %>% kable("html") 
+                 %>% kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover", "responsive"))
+
+```
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
