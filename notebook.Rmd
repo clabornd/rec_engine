@@ -1,8 +1,8 @@
 ---
 title: "Performing PCA on game rating data"
 output:
-  html_document: default
   html_notebook: default
+  html_document: default
 ---
 
 This notebook covers the cleaning and subsequent PCA analysis of the elite user ratings data.  
@@ -23,6 +23,7 @@ Lets first download the data and take a look.
 ```{r, warning = FALSE, message = FALSE, results = 'asis'}
 
 source("requirements.R")
+ggthemr("dust")
 
 elite <- read_csv("Data/boardgame-elite-users.csv") %>% rename(userID = `Compiled from boardgamegeek.com by Matt Borthwick`)
 
@@ -36,21 +37,102 @@ titles[1:5,] %>% kable("html") %>%
 
 ```
 
-##**Data Cleaning**
+<br>
+
+We can explore the data a bit more.  Lets calculate the average and standard deviation of ratings for each game as well as how many times it was reviewed.  A plot of average rating shows somewhat of an upward trend as number of reviews increases.
+
+<br>
+
+```{r, warning = FALSE, message = FALSE}
+#Group by game, calculate the within gruoup average, standard deviation, and ratings count, and join with the titles dataframe.
+elite <- elite %>% group_by(gameID) %>% 
+              mutate(avg_rating = mean(rating), sd_rating = sd(rating), freq = n()) %>%  
+              left_join(titles) 
+
+#kable() function makes nice tables
+elite[1:5,] %>% kable("html") %>%
+                kable_styling(full_width = FALSE, position = "left", 
+                              bootstrap_options = c("striped", "hover", "responsive"))
+
+#Plot mean and standard deviation against review frequency
+ggplot(elite, aes(x = x)) + 
+  geom_point(aes(x = freq, y = sd_rating, col = "red")) + 
+  geom_point(aes(x = freq, y = avg_rating, col = "blue")) +
+  xlab("Number of Reviews") + ylab("Value") +
+  scale_color_manual(values = c("red" = "red", "blue" = "blue"), 
+                     labels = c("Average", "Standard Deviation"))
+```
+
+ 
+
+<br>
+
+##**Data Preparation**
 
 We ultimately want our data to contain a **single row for each user** where the columns for that user represent their rating on **each game among all games**
 
-To get the data in this format, we lean on dplyr, and the acast() function in particular, which takes a formula as an argument which specifies which variables you want to define the rows and columns, and another argument (value.var) that specifies what value should occupy the cells of the reshaped dataframe.  
+To get the data in this format, we lean on dplyr, and the spread() function in particular, which will convert the data into a wide format.  The below dplyr pipeline performs the following tasks from top to bottom:
+
 
 ```{r, warning = FALSE, message = FALSE}
-elite <- elite %>% group_by(gameID) %>% 
-              mutate(avg_rating = mean(rating), freq = n()) %>%  
-              left_join(titles) %>%
-              select(userID, gameID, rating) %>%
-              spread(gameID, rating)
+elite_sparse <- elite%>%
+                select(userID, gameID, rating) %>%
+                spread(gameID, rating)
 
-elite[1:5, 1:15] %>% kable("html") 
-                 %>% kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover", "responsive"))
+elite_sparse[1:5, 1:15] %>% kable("html") %>% 
+                            kable_styling(full_width = FALSE, position = "left", 
+                                          bootstrap_options = c("striped", "hover", "responsive"))
+
+```
+
+As you can see, each reviewer does not have a score for every game, and we end up with a lot of missing values even for this set of "elite" reviewers.  There are a few methods that can be used to fill the missing cells, including using the mean/median rating.  Here I will use a set of functions from the missMDA package that uses iterative methods to find likely values.  Some of the resulting data will not make sense (negative ratings, ratings higher than the maximum), however this will still provide a workable base for performing PCA.
+
+Two steps are performed to fill the table:
+1. Estimate the number of dimensions(components) to be used in PCA
+2. Fill the missing cells assuming we have a number of dimensions estimated in 1.
+ 
+```{r, warning = FALSE, message = FALSE}
+ncomp <- estim_ncpPCA(as.data.frame(elite_sparse[,2:ncol(elite_sparse)]), ncp.min = 0, ncp.max = 6)
+
+elite_sparse_filled <- imputePCA(as.data.frame(elite_sparse[,2:ncol(elite_sparse)]), 
+                                 ncp = ncomp$ncp, scale = TRUE,
+                                 method = "EM", row.w = NULL, coeff.ridge = 1,
+                                 threshold = 1e-06, seed = NULL, nb.init = 1, maxiter = 1000)$completeObs
+
+PCA <- prcomp(elite_sparse_filled, rank. = ncomp$ncp, retx = TRUE)
+
+#PCAEM <- prcomp(df.imp$completeObs, rank. = 6)
+
+```
+
+
+We graph the data in terms of pairs of principal components.  We can see how PCA chooses the component axes.  The data varies most in the direction of principal component 1, then principal component 2, and so on.
+
+<br>
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+theme <- list(theme(plot.margin=unit(c(0.25,0.25,0.25,0.25), "cm"),
+                    axis.title.x = element_text(size = 8, vjust = -0.5),
+                    axis.title.y = element_text(size = 8)
+                    ))
+
+grid.arrange(
+ggplot(as.data.frame(PCA$x), aes(x = PC1, y=PC2)) + geom_point() + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC2, y=PC3)) + geom_point() + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC3, y=PC4)) + geom_point() + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC4, y=PC5)) + geom_point() + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC5, y=PC6)) + geom_point() + theme,
+ncol = 3
+)
+```
+
+<br>
+
+##**K-Means Clustering Using Principal Components**
+
+```{r, warning = FALSE, message = FALSE}
+PCA.kmeans <- kmeans(PCA$x, centers = 3)
+
 
 ```
 
