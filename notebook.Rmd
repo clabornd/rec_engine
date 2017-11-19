@@ -101,7 +101,8 @@ elite_sparse_filled <- imputePCA(as.data.frame(elite_sparse[,2:ncol(elite_sparse
 
 PCA <- prcomp(elite_sparse_filled, rank. = ncomp$ncp, retx = TRUE)
 
-#PCAEM <- prcomp(df.imp$completeObs, rank. = 6)
+components <- as.data.frame(PCA$rotation) %>% mutate(gameID = as.numeric(rownames(.))) %>% left_join(titles) 
+
 
 ```
 
@@ -111,22 +112,34 @@ We graph the data in terms of pairs of principal components.  We can see how PCA
 <br>
 
 ```{r, warning = FALSE, message = FALSE, echo = FALSE}
-theme <- list(theme(plot.margin=unit(c(0.25,0.25,0.25,0.25), "cm"),
+theme <- list(geom_point(color = "black", fill = "green", pch = 21),
+              theme(plot.margin=unit(c(0.25,0.25,0.25,0.25), "cm"),
                     axis.title.x = element_text(size = 8, vjust = -0.5),
                     axis.title.y = element_text(size = 8)
                     ))
 
 grid.arrange(
-ggplot(as.data.frame(PCA$x), aes(x = PC1, y=PC2)) + geom_point() + theme,
-ggplot(as.data.frame(PCA$x), aes(x = PC2, y=PC3)) + geom_point() + theme,
-ggplot(as.data.frame(PCA$x), aes(x = PC3, y=PC4)) + geom_point() + theme,
-ggplot(as.data.frame(PCA$x), aes(x = PC4, y=PC5)) + geom_point() + theme,
-ggplot(as.data.frame(PCA$x), aes(x = PC5, y=PC6)) + geom_point() + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC1, y=PC2)) + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC2, y=PC3)) + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC3, y=PC4)) + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC4, y=PC5)) + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC5, y=PC6)) + theme,
 ncol = 3
 )
 ```
 
 <br>
+
+We can look at the top 10 loadings for each principal component and see what kinds of games are included to see if they describe some sort of genre or series of games.
+
+```{r, warning = FALSE, message = FALSE}
+
+top_n(components, 10, PC3) %>% kable("html") %>% 
+                               kable_styling(full_width = FALSE, position = "left", 
+                                             bootstrap_options = c("striped", "hover", "responsive"))
+
+
+```
 
 ##**K-Means Clustering Using Principal Components**
 
