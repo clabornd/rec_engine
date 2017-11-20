@@ -134,12 +134,15 @@ We can look at the top 10 loadings for each principal component and see what kin
 
 ```{r, warning = FALSE, message = FALSE}
 
-top_n(components, 10, PC3) %>% kable("html") %>% 
+cbind(top_n(components, 10, PC1) %>% desc(PC1) %>% select(PC1, title),
+      top_n(components, 5, PC2) %>% select(PC2, title),
+      top_n(components, 5, PC3) %>% select(PC3, title)) %>% kable("html") %>% 
                                kable_styling(full_width = FALSE, position = "left", 
                                              bootstrap_options = c("striped", "hover", "responsive"))
-
-
 ```
+
+
+
 
 ##**K-Means Clustering Using Principal Components**
 
@@ -149,7 +152,71 @@ PCA.kmeans <- kmeans(PCA$x, centers = 3)
 
 ```
 
+Now we will attempt to build a recommendation engine based on the full user data.  The process will use a basic collaborative filtering with some experimental adjustments to predict scores.
 
+The similarity between two users will be determined by calculating a scaled Pearson's Correlation coefficient:
+
+$$s(u,v)=\frac{1}{\vert{D(N)\vert}^\alpha}\frac{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u,i})(r_{v,i}-\overline{r}_{v,i})}{\sqrt{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u,i})^2}\sqrt{\sum_{i\in I_{common}}(r_{v,i}-\overline{r}_{v,i})^2}}$$
+Where $\vert D_{u,v}(N)\vert$ is the absolute difference in the number of ratings between user $u$ and $v$.  I include this adjustment under the suspicion that users who rate a lot of games tend form a group that rates games similarly.  The parameter $\alpha$ controls the magnitude of this effect and will be optimized for predictive power later.  For now, we will perform the analysis assuming $\alpha = 1$
+
+
+
+```{r, message = FALSE, warning = FALSE}
+getUsers <- function(df, itemID){
+  quoted_item <- enquo(itemID)
+  print(quoted_item)
+  
+  df %>% filter(!is.na(!!quoted_item))
+}
+
+similarity <- function(user1, user2, alpha = 1){
+  df <- rbind(user1, user2)
+  df <- df[,which((!is.na(df[1,])) & (!is.na(df[2,])))]
+  
+  diff <- sum(!is.na(user1)) - sum(!is.na(user2))
+  
+  score = 1/abs(diff)^alpha*cor(as.matrix(df)[1,1:ncol(df)], as.matrix(df)[2,1:ncol(df)])
+  
+  return(score)
+}
+
+user1 <- elite_sparse[1,]
+user2 <- elite_sparse[10,]
+
+similarity(user1, user2, 1)
+
+#predict_score pseudocode(df, user, productID)
+#
+#1) get list of all users who have rated product given by productID
+#
+#VALUES NEEDED: average rating for user of interest:
+#               average rating for each other user
+#
+#2)for each user in list of users in step 1.
+#  a) compute the similarity to UOI
+#     multiply by the difference of that users rating for item and and their average rating
+#      sum all values
+#  
+#  b)compute the -absolute- similarity to UOI
+#    sum all values
+#
+#3)compute <average rating for UOI - a)/b)>
+#
+
+predict_scores(df, users, itemID){
+  users <- getUsers(df, itemID)
+  
+  users <- users %>% mutate(Mean = rowMeans(users)) %>%
+           rowwise()
+           
+}
+
+f <- data.frame(A=rnorm(10), B=rnorm(10), C=rnorm(10))
+
+f %>% rowwise() %>% mutate(Mean = rowMeans(df))
+
+
+```
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
 When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
