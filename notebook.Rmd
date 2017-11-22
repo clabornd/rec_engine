@@ -162,28 +162,67 @@ Where $\vert D_{u,v}(N)\vert$ is the absolute difference in the number of rating
 
 
 ```{r, message = FALSE, warning = FALSE}
-getUsers <- function(df, itemID){
-  quoted_item <- enquo(itemID)
-  print(quoted_item)
-  
-  df %>% filter(!is.na(!!quoted_item))
-}
+#getUsers <- function(df, itemID){
+#  quoted_item <- enquo(itemID)
+#  
+#  df %>% filter(!is.na(!!quoted_item))
+#}
 
-similarity <- function(user1, user2, alpha = 1){
+similarity <- function(user1, user2, alpha = 10){
   df <- rbind(user1, user2)
   df <- df[,which((!is.na(df[1,])) & (!is.na(df[2,])))]
   
   diff <- sum(!is.na(user1)) - sum(!is.na(user2))
   
-  score = 1/abs(diff)^alpha*cor(as.matrix(df)[1,1:ncol(df)], as.matrix(df)[2,1:ncol(df)])
+  score = cor(as.matrix(df)[1,], as.matrix(df)[2,])
   
   return(score)
 }
 
-user1 <- elite_sparse[1,]
-user2 <- elite_sparse[10,]
+predict_score <- function(user, df_train, itemID){
+  itemID_quo <- enquo(itemID)
+  
+  user <- user %>% 
+          rowwise() %>% 
+          mutate(n = sum(!is.na(.))) %>% 
+          ungroup() %>% 
+          mutate(mean = apply(user %>% select(-n), 1, mean, na.rm = TRUE), sd = apply(user %>% select(-n), 1, sd, na.rm = TRUE))
 
-similarity(user1, user2, 1)
+
+  relevant_users <- df_train %>% filter(!is.na(!!itemID_quo))
+    
+  relevant_users <- relevant_users %>%
+                              rowwise() %>% 
+                              mutate(n = sum(!is.na(.))) %>% 
+                              ungroup() %>%
+                              mutate(mean = apply(as.matrix(relevant_users %>% select(-n)), 1, mean, na.rm = TRUE), 
+                                     sd = apply(as.matrix(relevant_users %>% select(-n)), 1, sd, na.rm = TRUE)) %>%
+                                      filter(sd != 0)
+     
+ 
+ 
+  relevant_users <- relevant_users %>% mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user))
+  
+  print(relevant_users$simscore*((relevant_users %>% select(!!itemID_quo))-relevant_users$mean))
+  
+  predict = user$mean + sum(relevant_users$simscore*((relevant_users %>% select(!!itemID_quo))-relevant_users$mean))/sum(abs(relevant_users$simscore))
+  
+  return(predict)
+}
+
+predict_score(user[,-1], train[,-1], `188`)
+
+
+hi <- predict_score(user[,-1], train[,-1], `116`)
+
+mean(train[1,])
+
+
+user <- elite_sparse[1,-1] %>% mutate(`45`=NA)
+train <- elite_sparse[-1,-1]
+
+
+
 
 #predict_score pseudocode(df, user, productID)
 #
@@ -203,20 +242,8 @@ similarity(user1, user2, 1)
 #3)compute <average rating for UOI - a)/b)>
 #
 
-predict_scores(df, users, itemID){
-  users <- getUsers(df, itemID)
-  
-  users <- users %>% mutate(Mean = rowMeans(users)) %>%
-           rowwise()
-           
-}
-
-f <- data.frame(A=rnorm(10), B=rnorm(10), C=rnorm(10))
-
-f %>% rowwise() %>% mutate(Mean = rowMeans(df))
-
-
 ```
+
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
 
 When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
