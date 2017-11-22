@@ -161,26 +161,25 @@ Where $\vert D_{u,v}(N)\vert$ is the absolute difference in the number of rating
 
 
 
-```{r, message = FALSE, warning = FALSE}
+```{r, message = FALSE, warning = FALSE, echo = FALSE}
 #getUsers <- function(df, itemID){
 #  quoted_item <- enquo(itemID)
 #  
 #  df %>% filter(!is.na(!!quoted_item))
 #}
 
-similarity <- function(user1, user2, alpha = 10){
+similarity <- function(user1, user2, alpha = 2){
   df <- rbind(user1, user2)
   df <- df[,which((!is.na(df[1,])) & (!is.na(df[2,])))]
   
   diff <- sum(!is.na(user1)) - sum(!is.na(user2))
   
-  score = cor(as.matrix(df)[1,], as.matrix(df)[2,])
+  score = 1/(abs(diff)+1)^alpha*(cor(as.matrix(df)[1,], as.matrix(df)[2,])+1)
   
   return(score)
 }
 
 predict_score <- function(user, df_train, itemID){
-  itemID_quo <- enquo(itemID)
   
   user <- user %>% 
           rowwise() %>% 
@@ -189,8 +188,8 @@ predict_score <- function(user, df_train, itemID){
           mutate(mean = apply(user %>% select(-n), 1, mean, na.rm = TRUE), sd = apply(user %>% select(-n), 1, sd, na.rm = TRUE))
 
 
-  relevant_users <- df_train %>% filter(!is.na(!!itemID_quo))
-    
+  relevant_users <- df_train %>% filter(!is.na(!!sym(itemID)))
+  
   relevant_users <- relevant_users %>%
                               rowwise() %>% 
                               mutate(n = sum(!is.na(.))) %>% 
@@ -203,23 +202,43 @@ predict_score <- function(user, df_train, itemID){
  
   relevant_users <- relevant_users %>% mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user))
   
-  print(relevant_users$simscore*((relevant_users %>% select(!!itemID_quo))-relevant_users$mean))
-  
-  predict = user$mean + sum(relevant_users$simscore*((relevant_users %>% select(!!itemID_quo))-relevant_users$mean))/sum(abs(relevant_users$simscore))
+  predict = user$mean + sum(relevant_users$simscore*((relevant_users %>% select(itemID))-relevant_users$mean))/sum(abs(relevant_users$simscore))
   
   return(predict)
 }
 
-predict_score(user[,-1], train[,-1], `188`)
+user <- elite_sparse[1,-1]
+test <- elite_sparse[-1, -1]
+
+predict_score(user, test, "11")
+
+indices <- sample(1:nrow(elite_sparse), floor(.2*nrow(elite_sparse)))
+
+test <- elite_sparse[indices, -1]
+train <- elite_sparse[-indices, -1]
+
+test["true"] <- 0
+test["item"] <- 0
+test["pred"] <- 0
 
 
-hi <- predict_score(user[,-1], train[,-1], `116`)
-
-mean(train[1,])
 
 
-user <- elite_sparse[1,-1] %>% mutate(`45`=NA)
-train <- elite_sparse[-1,-1]
+for(i in 1:nrow(test)){
+    #get a random column which is not empty
+    #get the name of that column
+    #store these in "true" and "item" respectively
+    index <- sample(which(!is.na(test[i,])), 1)
+  
+    test[i,]$true <- unlist(test[i,index][[1]]) 
+    test[i,]$item <- colnames(test[,index])
+    
+    foo <- test[i, names(test) != c("true", "item")]
+    foo[test[i,]$item] <- NA
+    
+    test[i,]$pred <- predict_score(foo, train, test[i,]$item) 
+    
+}
 
 
 
