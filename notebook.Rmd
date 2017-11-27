@@ -1,8 +1,8 @@
 ---
 title: "Performing PCA on game rating data"
 output:
-  html_notebook: default
   html_document: default
+  html_notebook: default
 ---
 
 This notebook covers the cleaning and subsequent PCA analysis of the elite user ratings data.  
@@ -99,7 +99,7 @@ elite_sparse_filled <- imputePCA(as.data.frame(elite_sparse[,2:ncol(elite_sparse
                                  method = "EM", row.w = NULL, coeff.ridge = 1,
                                  threshold = 1e-06, seed = NULL, nb.init = 1, maxiter = 1000)$completeObs
 
-PCA <- prcomp(elite_sparse_filled, rank. = ncomp$ncp, retx = TRUE)
+PCA <- prcomp(elite_sparse_filled, retx = TRUE)
 
 components <- as.data.frame(PCA$rotation) %>% mutate(gameID = as.numeric(rownames(.))) %>% left_join(titles) 
 
@@ -107,16 +107,16 @@ components <- as.data.frame(PCA$rotation) %>% mutate(gameID = as.numeric(rowname
 ```
 
 
-We graph the data in terms of pairs of principal components.  We can see how PCA chooses the component axes.  The data varies most in the direction of principal component 1, then principal component 2, and so on.
+We graph the data in terms of pairs of principal components.  We can see how PCA chooses the component axes.  The data varies most in the direction of principal component 1, then principal component 2, and so on.  However we
 
 <br>
 
-```{r, warning = FALSE, message = FALSE, echo = FALSE}
+```{r, warning = FALSE, message = FALSE, fig.cap = "Pairs of the first 7 principal components"}
 theme <- list(geom_point(color = "black", fill = "green", pch = 21),
               theme(plot.margin=unit(c(0.25,0.25,0.25,0.25), "cm"),
                     axis.title.x = element_text(size = 8, vjust = -0.5),
                     axis.title.y = element_text(size = 8)
-                    ))
+                    ), xlim(-60, 60), ylim(-60, 60))
 
 grid.arrange(
 ggplot(as.data.frame(PCA$x), aes(x = PC1, y=PC2)) + theme,
@@ -124,6 +124,7 @@ ggplot(as.data.frame(PCA$x), aes(x = PC2, y=PC3)) + theme,
 ggplot(as.data.frame(PCA$x), aes(x = PC3, y=PC4)) + theme,
 ggplot(as.data.frame(PCA$x), aes(x = PC4, y=PC5)) + theme,
 ggplot(as.data.frame(PCA$x), aes(x = PC5, y=PC6)) + theme,
+ggplot(as.data.frame(PCA$x), aes(x = PC6, y=PC7)) + theme,
 ncol = 3
 )
 ```
@@ -134,41 +135,42 @@ We can look at the top 10 loadings for each principal component and see what kin
 
 ```{r, warning = FALSE, message = FALSE}
 
-cbind(top_n(components, 10, PC1) %>% desc(PC1) %>% select(PC1, title),
+cbind(top_n(components, 10, PC1) %>% arrange(desc(PC1)) %>% select(PC1, title),
       top_n(components, 5, PC2) %>% select(PC2, title),
       top_n(components, 5, PC3) %>% select(PC3, title)) %>% kable("html") %>% 
                                kable_styling(full_width = FALSE, position = "left", 
                                              bootstrap_options = c("striped", "hover", "responsive"))
 ```
 
+```{r, warning = FALSE, message = FALSE}
+explained_variance <- PCA$sdev^2/sum(PCA$sdev^2)
+```
 
-
-
-##**K-Means Clustering Using Principal Components**
+Aside from exploratory analysis, we can use these componenets for further analysis such as simple regression or K-means clustering:
 
 ```{r, warning = FALSE, message = FALSE}
-PCA.kmeans <- kmeans(PCA$x, centers = 3)
+#PCA.kmeans <- kmeans(PCA$x[,1:6], centers = 3)
 
 
 ```
 
-Now we will attempt to build a recommendation engine based on the full user data.  The process will use a basic collaborative filtering with some experimental adjustments to predict scores.
+Now we will attempt to build a recommendation engine based on the full user data.  The process will use a basic User-User collaborative filtering scheme with some experimental adjustments to predict scores.
 
 The similarity between two users will be determined by calculating a scaled Pearson's Correlation coefficient:
 
 $$s(u,v)=\frac{1}{\vert{D(N)\vert}^\alpha}\frac{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u,i})(r_{v,i}-\overline{r}_{v,i})}{\sqrt{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u,i})^2}\sqrt{\sum_{i\in I_{common}}(r_{v,i}-\overline{r}_{v,i})^2}}$$
 Where $\vert D_{u,v}(N)\vert$ is the absolute difference in the number of ratings between user $u$ and $v$.  I include this adjustment under the suspicion that users who rate a lot of games tend form a group that rates games similarly.  The parameter $\alpha$ controls the magnitude of this effect and will be optimized for predictive power later.  For now, we will perform the analysis assuming $\alpha = 1$
 
+We will write three functions to do our predictions.  The first, `similarity(user1, user2)`, computes the similarity score between two users.  The second, `predict_score(test, train, itemID)` predicts a score given a user, training data, and an item ID.  The last function, `test_batch(test, train)`, loops over a batch of test cases.  For each test case, it randomly selects an item with a rating and holds it out, and then attempts to predict the score for that item using `predict_score()`.  At the end of the loop a dataframe containing the predicted/true values and the item ID will be returned.
 
-
-```{r, message = FALSE, warning = FALSE, echo = FALSE}
+```{r, message = FALSE, warning = FALSE, echo = FALSE, comment = FALSE}
 #getUsers <- function(df, itemID){
 #  quoted_item <- enquo(itemID)
 #  
 #  df %>% filter(!is.na(!!quoted_item))
 #}
 
-similarity <- function(user1, user2, alpha = 2){
+similarity <- function(user1, user2, alpha = 1){
   df <- rbind(user1, user2)
   df <- df[,which((!is.na(df[1,])) & (!is.na(df[2,])))]
   
@@ -187,82 +189,70 @@ predict_score <- function(user, df_train, itemID){
           ungroup() %>% 
           mutate(mean = apply(user %>% select(-n), 1, mean, na.rm = TRUE), sd = apply(user %>% select(-n), 1, sd, na.rm = TRUE))
 
-
-  relevant_users <- df_train %>% filter(!is.na(!!sym(itemID)))
   
-  relevant_users <- relevant_users %>%
+  relevant_users <- df_train %>% filter(!is.na(!!sym(itemID))) 
+  #someone please tell me why the pipe must be broken here
+  
+  
+  relevant_users <-  relevant_users %>%
                               rowwise() %>% 
                               mutate(n = sum(!is.na(.))) %>% 
                               ungroup() %>%
                               mutate(mean = apply(as.matrix(relevant_users %>% select(-n)), 1, mean, na.rm = TRUE), 
                                      sd = apply(as.matrix(relevant_users %>% select(-n)), 1, sd, na.rm = TRUE)) %>%
                                       filter(sd != 0)
-     
- 
- 
-  relevant_users <- relevant_users %>% mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user))
+  
+  #we must do this part of the dplyr pipe seperately due to having to call the data frame within apply()   
+  relevant_users <- relevant_users %>% 
+    mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user))
   
   predict = user$mean + sum(relevant_users$simscore*((relevant_users %>% select(itemID))-relevant_users$mean))/sum(abs(relevant_users$simscore))
   
   return(predict)
 }
 
-user <- elite_sparse[1,-1]
-test <- elite_sparse[-1, -1]
-
-predict_score(user, test, "11")
-
-indices <- sample(1:nrow(elite_sparse), floor(.2*nrow(elite_sparse)))
-
-test <- elite_sparse[indices, -1]
-train <- elite_sparse[-indices, -1]
-
-test["true"] <- 0
-test["item"] <- 0
-test["pred"] <- 0
-
-
-
-
-for(i in 1:nrow(test)){
-    #get a random column which is not empty
-    #get the name of that column
-    #store these in "true" and "item" respectively
-    index <- sample(which(!is.na(test[i,])), 1)
+test_batch <- function(test, train){  
+  pred <- true <- 0
+  item <- NA
   
-    test[i,]$true <- unlist(test[i,index][[1]]) 
-    test[i,]$item <- colnames(test[,index])
+  for(i in 1:nrow(test)){
+      #get a random column which is not empty
+      #get the name of that column
+      #store these in "true" and "item" respectively
+      index <- sample(which(!is.na(test[i,])), 1)
     
-    foo <- test[i, names(test) != c("true", "item")]
-    foo[test[i,]$item] <- NA
-    
-    test[i,]$pred <- predict_score(foo, train, test[i,]$item) 
-    
+      true[i] <- test[i,index][[1]] 
+      item[i] <- colnames(test[,index])
+      
+      foo <- test[i,]
+      foo[item[i]] <- NA
+      
+      pred[i] <- predict_score(foo, train, item[i]) 
+      
+      
+  }
+  
+  return(data.frame(predicted = pred, true = true, itemID = item))
+
 }
 
 
-
-
-#predict_score pseudocode(df, user, productID)
-#
-#1) get list of all users who have rated product given by productID
-#
-#VALUES NEEDED: average rating for user of interest:
-#               average rating for each other user
-#
-#2)for each user in list of users in step 1.
-#  a) compute the similarity to UOI
-#     multiply by the difference of that users rating for item and and their average rating
-#      sum all values
-#  
-#  b)compute the -absolute- similarity to UOI
-#    sum all values
-#
-#3)compute <average rating for UOI - a)/b)>
-#
-
 ```
 
-Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Ctrl+Alt+I*.
+We will randomly select 20% of the elite users and use them as the test cases.  The rest will be used alongside each individual test case to calculate a predicted score.  
 
-When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Ctrl+Shift+K* to preview the HTML file).
+```{r, warning = FALSE, message = FALSE}
+
+indices <- sample(1:nrow(elite_sparse), floor(.2*nrow(elite_sparse)))
+  
+test <- elite_sparse[indices, -1]
+train <- elite_sparse[-indices, -1]
+  
+
+preds <- test_batch(test, train)
+
+head(preds) %>% kable("html") %>% 
+                            kable_styling(full_width = FALSE, position = "left", 
+                                          bootstrap_options = c("striped", "hover", "responsive"))
+```
+
