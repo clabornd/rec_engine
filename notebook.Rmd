@@ -1,9 +1,9 @@
 ---
-title: "PCA and User-User Collaborative for Boardgame Ratings Data"
+title: "PCA and User-User Collaborative Filtering for Boardgame Ratings Data"
 output:
-  html_notebook: default
   html_document:
     code_folding: hide
+  html_notebook: default
 ---
 
 ```{r global_options, include=FALSE}
@@ -24,7 +24,7 @@ Our tasks are as follows:
 
 Lets first download the data and take a look.
 
-```{r, results = 'asis'}
+```{r summary, results = 'asis'}
 
 source("requirements.R")
 ggthemr("dust")
@@ -47,7 +47,7 @@ For each row, we have a user ID, a game ID, and a rating for the game by the ind
 
 <br>
 
-```{r, fig.cap = "**Scatterplots of mean rating (red) and standard deviation (blue) against number of reviews**"}
+```{r join_meansdplot, fig.cap = "**Scatterplots of mean rating (red) and standard deviation (blue) against number of reviews**"}
 #Group by game, calculate the within gruoup average, standard deviation, and ratings count, and join with the titles dataframe.
 elite <- elite %>% group_by(gameID) %>% 
               mutate(avg_rating = mean(rating), sd_rating = sd(rating), freq = n()) %>%  
@@ -78,7 +78,7 @@ We ultimately want our data to contain a **single row for each user** where the 
 To get the data in this format, we lean on dplyr, and the spread() function in particular, which will convert the data into a wide format:
 
 
-```{r}
+```{r long2wide}
 elite_sparse <- elite%>%
                 select(userID, gameID, rating) %>%
                 spread(gameID, rating)
@@ -95,7 +95,7 @@ Two steps are performed to fill the table:
 1. Estimate the number of dimensions(components) to be used in PCA
 2. Fill the missing cells assuming we have a number of dimensions estimated in 1.
  
-```{r, cache = TRUE}
+```{r estimpca, cache = TRUE}
 #Estimate dimensions
 ncomp <- estim_ncpPCA(as.data.frame(elite_sparse[,2:ncol(elite_sparse)]), ncp.min = 0, ncp.max = 6)
 
@@ -118,7 +118,7 @@ We graph the data in terms of pairs of principal components.  We can see how PCA
 
 <br>
 
-```{r, fig.cap = "**Pairs of the first 7 principal components**"}
+```{r plotpca, fig.cap = "**Pairs of the first 7 principal components**"}
 theme <- list(geom_point(color = "black", fill = "green", pch = 21),
               theme(plot.margin=unit(c(0.25,0.25,0.25,0.25), "cm"),
                     axis.title.x = element_text(size = 8, vjust = -0.5),
@@ -140,7 +140,7 @@ ncol = 3
 
 We can look at the top 10 loadings for each principal component and see what kinds of games are included to see if they describe some sort of genre or series of games.
 
-```{r, warning = FALSE, message = FALSE}
+```{r top_n, warning = FALSE, message = FALSE}
 
 cbind(top_n(components, 10, PC1) %>% arrange(desc(PC1)) %>% select(PC1, title),
       top_n(components, 10, PC2) %>% select(PC2, title),
@@ -153,27 +153,24 @@ Looking at the descriptions for the lists of games, there does not appear to be 
 
 A quick plot of the cumulative explained variance from each component shows greatly diminshed returns after the 6th or so PC.  The variance explained by the first PC is significantly greater than the rest.
 
-```{r, warning = FALSE, message = FALSE}
+```{r explvar, warning = FALSE, message = FALSE}
 explained_variance <- PCA$sdev^2/sum(PCA$sdev^2)
 
 qplot(0:199, c(0,cumsum(explained_variance))) + xlab("Principal Component #") + ylab("Cumulative Explained Variance")
 ```
 
-Aside from exploratory analysis, we can use these componenets for further analysis such as simple regression or K-means clustering:
+Aside from exploratory analysis, we can use these components for further analysis such as simple regression or K-means clustering.  For now, we will put this PCA aside and move on to building a recommendation engine from scratch.
 
-```{r, warning = FALSE, message = FALSE}
-#PCA.kmeans <- kmeans(PCA$x[,1:6], centers = 3)
-
-```
+<br>
 
 ##Recommendation Engine with User-User Collaborative Filtering.
 
-We will now attempt to build a recommendation engine based on the full user data.  The process will use a basic User-User collaborative filtering scheme with some experimental adjustments to predict scores.
+We will now attempt to build a recommendation engine for the elite user data.  The process will use a basic User-User collaborative filtering scheme with some experimental adjustments to predict scores.
 
 The similarity between two users will be determined by calculating a scaled Pearson's Correlation coefficient:
 
-$$s(u,v)=\frac{1}{\vert{D_{u,v}(N)\vert}^\alpha}{\huge[}\frac{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u,i})(r_{v,i}-\overline{r}_{v,i})}{\sqrt{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u,i})^2}\sqrt{\sum_{i\in I_{common}}(r_{v,i}-\overline{r}_{v,i})^2}}+1{\huge]}$$
-Where $\vert D_{u,v}(N)\vert$ is the absolute difference in the number of ratings between user $u$ and $v$.  I include this adjustment under the suspicion that users who rate a lot of games tend form a group that rates games similarly.  The parameter $\alpha$ controls the magnitude of this effect and will be optimized for predictive power later.  For now, we will perform the analysis assuming $\alpha = 1$
+$$s(u,v)=\frac{1}{\vert{D_{u,v}(N)\vert}^\alpha}{\huge[}\frac{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u})(r_{v,i}-\overline{r}_{v})}{\sqrt{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u})^2}\sqrt{\sum_{i\in I_{common}}(r_{v,i}-\overline{r}_{v})^2}}+1{\huge]}$$
+Where $r_{u,i}$ and $\overline{r}_{u}$ are user $u$'s rating for item $i$ and $u$'s average rating across *all* items respectively.  $I_{common}$ denotes the set of all items that $u$ and $v$ have both rated.  $\vert D_{u,v}(N)\vert$ is the absolute difference in the number of ratings between user $u$ and $v$.  I include this adjustment under the suspicion that users who rate a lot of games tend form a group that rates games similarly.  The parameter $\alpha$ controls the magnitude of this effect and will be optimized for predictive power later.  For now, we will perform the analysis assuming $\alpha = 1$
 
 We will write three functions to do our predictions.  The first, `similarity(user1, user2)`, computes the similarity score between two users.  The second, `predict_score(test, train, itemID)` predicts a score given a user, training data, and an item ID.  The formula begins with the user-in-question's average rating, and moves up or down depending on other users rating of the game in question weighted by the similarity score:
 
@@ -182,7 +179,7 @@ where $p_{u,i}$ is the predicted score for user $u$ and item $i$, $\overline{r}_
 
 The last function, `test_batch(test, train)`, loops over a batch of test cases.  For each test case, it randomly selects an item with a rating and holds it out, and then attempts to predict the score for that item using `predict_score()`.  At the end of the loop a dataframe containing the predicted/true values and the item ID will be returned.
 
-```{r, message = FALSE, warning = FALSE, comment = FALSE}
+```{r functions, message = FALSE, warning = FALSE, comment = FALSE}
 #getUsers <- function(df, itemID){
 #  quoted_item <- enquo(itemID)
 #  
@@ -200,7 +197,7 @@ similarity <- function(user1, user2, alpha = 1){
   return(score)
 }
 
-predict_score <- function(user, df_train, itemID){
+predict_score <- function(user, df_train, itemID, sd = FALSE){
   
   user <- user %>% 
           rowwise() %>% 
@@ -225,12 +222,21 @@ predict_score <- function(user, df_train, itemID){
   relevant_users <- relevant_users %>% 
     mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user))
   
-  predict = user$mean + sum(relevant_users$simscore*((relevant_users %>% select(itemID))-relevant_users$mean))/sum(abs(relevant_users$simscore))
+  if(sd){
+    predict = user$mean + 
+              user$sd*sum(relevant_users$simscore*((relevant_users %>% select(itemID))-relevant_users$mean)/relevant_users$sd)/
+              sum(abs(relevant_users$simscore))  
+  }
+  else{
+    predict = user$mean + 
+              sum(relevant_users$simscore*((relevant_users %>% select(itemID))-relevant_users$mean))/
+              sum(abs(relevant_users$simscore)) 
+  }
   
   return(predict)
 }
 
-test_batch <- function(test, train){  
+test_batch <- function(test, train, ...){  
   pred <- true <- 0
   item <- NA
   
@@ -246,7 +252,7 @@ test_batch <- function(test, train){
       foo <- test[i,]
       foo[item[i]] <- NA
       
-      pred[i] <- predict_score(foo, train, item[i]) 
+      pred[i] <- predict_score(foo, train, item[i], ...) 
       
       
   }
@@ -260,7 +266,7 @@ test_batch <- function(test, train){
 
 We will randomly select 20% of the elite users and use them as the test cases.  The rest will be used alongside each individual test case to calculate a predicted score.  
 
-```{r, message = FALSE, cache = TRUE}
+```{r test_nosd, message = FALSE, cache = TRUE}
 
 indices <- sample(1:nrow(elite_sparse), floor(.2*nrow(elite_sparse)))
   
@@ -274,10 +280,9 @@ head(preds) %>% kable("html") %>%
                                           bootstrap_options = c("striped", "hover", "responsive"))
 ```
 
-To see how our engine did, we can look at the correlation between the true and predicted values, as well as the root mean squared error of our predictions:
+To see how our engine did, we can look at the root mean squared error of our predictions.  This is the root of the average squared difference between the predicted and true values:  $RMSE = \sqrt{\frac{1}{U_{test}}\sum_u(p_{u,i}-r_{u,i})}$
 
-```{r, echo = TRUE}
-cor(preds$predicted, preds$true)
+```{r RMSE, echo = TRUE}
 
 RMSE <- sqrt(mean((preds$predicted - preds$true)^2))
 
@@ -285,49 +290,20 @@ RMSE
 
 ```
 
-The correlation isn't particularly strong, but hey at least its positive!  On average, our predictions are off by one and a half points, not particularly impressive.  To improve performance, we can scale the difference for each user score from their mean by the standard deviation of that users ratings:
-
-```{r}
-predict_score <- function(user, df_train, itemID){
-  
-  user <- user %>% 
-          rowwise() %>% 
-          mutate(n = sum(!is.na(.))) %>% 
-          ungroup() %>% 
-          mutate(mean = apply(user %>% select(-n), 1, mean, na.rm = TRUE), sd = apply(user %>% select(-n), 1, sd, na.rm = TRUE))
-
-  
-  relevant_users <- df_train %>% filter(!is.na(!!sym(itemID))) 
-  #someone please tell me why the pipe must be broken here
-  
-  
-  relevant_users <-  relevant_users %>%
-                              rowwise() %>% 
-                              mutate(n = sum(!is.na(.))) %>% 
-                              ungroup() %>%
-                              mutate(mean = apply(as.matrix(relevant_users %>% select(-n)), 1, mean, na.rm = TRUE), 
-                                     sd = apply(as.matrix(relevant_users %>% select(-n)), 1, sd, na.rm = TRUE)) %>%
-                                      filter(sd != 0)
-  
-  #we must do this part of the dplyr pipe seperately due to having to call the data frame within apply()   
-  relevant_users <- relevant_users %>% 
-    mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user))
-  
-  predict = user$mean + user$sd*sum(relevant_users$simscore*((relevant_users %>% select(itemID))-relevant_users$mean)/relevant_users$sd)/sum(abs(relevant_users$simscore))
-  
-  return(predict)
-}
-
-indices <- sample(1:nrow(elite_sparse), floor(.2*nrow(elite_sparse)))
-  
-test <- elite_sparse[indices, -1]
-train <- elite_sparse[-indices, -1]
-  
-preds <- test_batch(test, train)
-
-```
-
+On average, our predictions are off by almost one and a half points, not particularly impressive.  To improve performance, we can scale the difference for each user score from their mean by the standard deviation of that users ratings:
 
 $$p_{u,i} = \overline{r}_u+\sigma_u\frac{\sum_{u'\in U'}s(u,u')(r_{u',i}-\overline{r}_{u'})/\sigma_{u'}}{\sum_{u'\in U'}\vert s(u,u')\vert}$$
 
-Where $\sigma_u$ and $\sigma_{u'}$ indicate the standard deviation of the scores for the user in question and an arbitrary *other* user respectively
+Where $\sigma_u$ and $\sigma_{u'}$ indicate the standard deviation of the scores for the user in question and an arbitrary *other* user respectively.  Lets see if our predictions improved:
+
+```{r test_sd, cache = TRUE}
+
+preds <- test_batch(test, train, sd = TRUE)
+
+RMSE <- sqrt(mean((preds$predicted - preds$true)^2))
+
+RMSE
+
+```
+
+We see a slight improvement, and our engine is a little over a point off on average.  Not terrible for a basic implementation, though one problem of note is that the process takes a non-trivial amount of computing time.  In practice, this may be an issue, and is one of the main reasons why Item-Item filtering is preferred in some cases.  Next, we can try manipulating the $\alpha$ parameter to see if it improves performance.  
