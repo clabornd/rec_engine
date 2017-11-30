@@ -1,9 +1,9 @@
 ---
 title: "PCA and User-User Collaborative Filtering for Boardgame Ratings Data"
 output:
+  html_notebook: default
   html_document:
     code_folding: hide
-  html_notebook: default
 ---
 
 ```{r global_options, include=FALSE}
@@ -186,18 +186,26 @@ The last function, `test_batch(test, train)`, loops over a batch of test cases. 
 #  df %>% filter(!is.na(!!quoted_item))
 #}
 
-similarity <- function(user1, user2, alpha = 1){
+similarity <- function(user1, user2, alpha = 2, mode = "inverse power"){
   df <- rbind(user1, user2)
   df <- df[,which((!is.na(df[1,])) & (!is.na(df[2,])))]
   
   diff <- sum(!is.na(user1)) - sum(!is.na(user2))
   
-  score = 1/(abs(diff)+1)^alpha*(cor(as.matrix(df)[1,], as.matrix(df)[2,])+1)
-  
+  if(mode == "inverse power"){
+    score = 1/(abs(diff)+1)^alpha*(cor(as.matrix(df)[1,], as.matrix(df)[2,])+1)
+  }
+  else if(mode == "exponential"){
+    score = exp(-abs(diff)*alpha)*(cor(as.matrix(df)[1,], as.matrix(df)[2,])+1)
+  }
+  else if(mode == "linear"){
+    score = alpha/(abs(diff)+1)*(cor(as.matrix(df)[1,], as.matrix(df)[2,])+1)
+  }
+    
   return(score)
 }
 
-predict_score <- function(user, df_train, itemID, sd = FALSE){
+predict_score <- function(user, df_train, itemID, sd = FALSE, alpha = 1, mode = "inverse power"){
   
   user <- user %>% 
           rowwise() %>% 
@@ -220,7 +228,7 @@ predict_score <- function(user, df_train, itemID, sd = FALSE){
   
   #we must do this part of the dplyr pipe seperately due to having to call the data frame within apply()   
   relevant_users <- relevant_users %>% 
-    mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user))
+    mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user2 = user, alpha = alpha, mode = mode))
   
   if(sd){
     predict = user$mean + 
@@ -298,7 +306,7 @@ Where $\sigma_u$ and $\sigma_{u'}$ indicate the standard deviation of the scores
 
 ```{r test_sd, cache = TRUE}
 
-preds <- test_batch(test, train, sd = TRUE)
+preds <- test_batch(test, train, sd = TRUE, alpha = 3, mode = "exponential")
 
 RMSE <- sqrt(mean((preds$predicted - preds$true)^2))
 
@@ -306,4 +314,4 @@ RMSE
 
 ```
 
-We see a slight improvement, and our engine is a little over a point off on average.  Not terrible for a basic implementation, though one problem of note is that the process takes a non-trivial amount of computing time.  In practice, this may be an issue, and is one of the main reasons why Item-Item filtering is preferred in some cases.  Next, we can try manipulating the $\alpha$ parameter to see if it improves performance.  
+We see a slight improvement, and our engine is a little over a point off on average.  Not terrible for a basic implementation, though one problem of note is that the process takes a non-trivial amount of computing time.  In practice, this may be an issue, and is one of the main reasons why Item-Item filtering is preferred in some cases.  Next, we can try manipulating the $\alpha$ parameter to see if it improves performance.  Additionally, we can change the form of the correlation drop-off to something with linear or exponential decay.
