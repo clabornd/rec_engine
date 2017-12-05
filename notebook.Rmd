@@ -6,9 +6,6 @@ output:
     code_folding: hide
 ---
 
-```{r global_options, include=FALSE}
-knitr::opts_chunk$set(warning=FALSE, message=FALSE)
-```
 
 **Credit to Matthew Borthwick for scraping and providing this data.**  
 **Data Source:  boardgamegeek.com**
@@ -32,6 +29,10 @@ ggthemr("dust")
 elite <- read_csv("Data/boardgame-elite-users.csv") %>% rename(userID = `Compiled from boardgamegeek.com by Matt Borthwick`)
 
 titles <- read_csv("Data/boardgame-titles.csv") %>% rename(gameID = `boardgamegeek.com game ID`)
+
+test <- read_csv("Data/boardgame-users-test.csv")
+
+test <- test %>% inner_join(elite_sparse)
 
 elite[1:5,] %>% kable("html") %>%
                 kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover"))
@@ -180,32 +181,31 @@ where $p_{u,i}$ is the predicted score for user $u$ and item $i$, $\overline{r}_
 The last function, `test_batch(test, train)`, loops over a batch of test cases.  For each test case, it randomly selects an item with a rating and holds it out, and then attempts to predict the score for that item using `predict_score()`.  At the end of the loop a dataframe containing the predicted/true values and the item ID will be returned.
 
 ```{r functions, message = FALSE, warning = FALSE, comment = FALSE}
-#getUsers <- function(df, itemID){
-#  quoted_item <- enquo(itemID)
-#  
-#  df %>% filter(!is.na(!!quoted_item))
-#}
 
-similarity <- function(user1, user2, alpha = 2, mode = "inverse power"){
+similarity <- function(user1, user2, alpha = 1, mode = "unweighted"){
   df <- rbind(user1, user2)
   df <- df[,which((!is.na(df[1,])) & (!is.na(df[2,])))]
   
   diff <- sum(!is.na(user1)) - sum(!is.na(user2))
   
   if(mode == "inverse power"){
-    score = 1/(abs(diff)+1)^alpha*(cor(as.matrix(df)[1,], as.matrix(df)[2,])+1)
+    score = 1/(abs(diff)+1)^alpha*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
   }
   else if(mode == "exponential"){
-    score = exp(-abs(diff)*alpha)*(cor(as.matrix(df)[1,], as.matrix(df)[2,])+1)
+    score = exp(-abs(diff)*alpha)*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
   }
   else if(mode == "linear"){
-    score = alpha/(abs(diff)+1)*(cor(as.matrix(df)[1,], as.matrix(df)[2,])+1)
+    score = alpha/(abs(diff)+1)*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
+  }
+  else if(mode == "unweighted"){
+    score = cor(as.matrix(df)[1,], as.matrix(df)[2,])
   }
     
   return(score)
+  
 }
 
-predict_score <- function(user, df_train, itemID, sd = FALSE, alpha = 1, mode = "inverse power"){
+predict_score <- function(user, df_train, itemID, sd = FALSE, alpha = 1, mode = "unweighted"){
   
   user <- user %>% 
           rowwise() %>% 
@@ -244,31 +244,92 @@ predict_score <- function(user, df_train, itemID, sd = FALSE, alpha = 1, mode = 
   return(predict)
 }
 
+
+user_similarity <- function(usermatrix, alpha = 1, mode = "unweighted"){
+  sim_matrix <- matrix(0, nrow(usermatrix), nrow(usermatrix))
+  
+  for(i in 1:(nrow(usermatrix)-1)){
+    for(j in (i+1):nrow(usermatrix)){
+      sim_matrix[i,j] <- sim_matrix[j,i] <- similarity(usermatrix[i,], usermatrix[j,], alpha = alpha, mode = mode)
+      
+    }
+  }
+  
+  diag(sim_matrix) = 1
+  
+  return(as.data.frame(sim_matrix, row.names = rownames(usermatrix), col.names = rownames(usermatrix)))
+  
+}
+
+
+simmat <- user_similarity(elite_sparse[1:100,-1])
+
+###
+#'@param df A dataframe where the rows represent users and the named columns are items.  Each element holds a numeric rating.  This should be a dataframe of the -subset- of users whose scores you want to predict.
+#'@param mode Whether the values to be held out and predicted should be randomly selected or selected from a list of values.  Can be set to 'random' or 'list'.
+#'@param target_list The list of items to be held out if mode is set to 'list'
+#'@param return_reduced Whether or not to return the dataframe with values to predict held out.
+get_targets <- function(df, mode = "random", target_vector = NULL, return_reduced = TRUE){
+  
+  true <- 0
+  item <- NA
+  
+  if(mode = "random"){
+    for(i in nrow(df)){
+      #get a random column which is not empty
+        #get the name of that column
+        #store these in "true" and "item" respectively
+        index <- sample(which(!is.na(df[i,])), 1)
+      
+        true[i] <- df[i,index][[1]] 
+        item[i] <- colnames(df[,index])
+        
+        df[i, item[i]] <- NA
+    }
+    
+    return(cbind(item, true,df))
+    
+  }
+  else if(mode = "selected"){
+    
+    for(i in nrow(df)){
+      
+      true[i] <- df[i, target_vector[i]][[1]]
+      df[i, target_vector[i]] <- NA
+    }
+    
+    return(cbind(target_vector, true, df))
+  }
+}
+
+###FOR MATTS DATA, THIS SHOULD STILL WORK####
+###THE SELECTED DATA WILL EXTRACTED BY AN INNER JOIN AND THEN PASSED TO THIS FUNCTION###
+
 test_batch <- function(test, train, ...){  
   pred <- true <- 0
   item <- NA
   
   for(i in 1:nrow(test)){
-      #get a random column which is not empty
-      #get the name of that column
-      #store these in "true" and "item" respectively
-      index <- sample(which(!is.na(test[i,])), 1)
-    
-      true[i] <- test[i,index][[1]] 
-      item[i] <- colnames(test[,index])
+        #get a random column which is not empty
+        #get the name of that column
+        #store these in "true" and "item" respectively
+        index <- sample(which(!is.na(test[i,])), 1)
       
-      foo <- test[i,]
-      foo[item[i]] <- NA
-      
-      pred[i] <- predict_score(foo, train, item[i], ...) 
-      
-      
-  }
+        true[i] <- test[i,index][[1]] 
+        item[i] <- colnames(test[,index])
+        
+        foo <- test[i,]
+        foo[item[i]] <- NA
+        
+        pred[i] <- predict_score(foo, train, item[i], ...) 
+        
+        
+    }
   
+ 
   return(data.frame(predicted = pred, true = true, itemID = item))
 
 }
-
 
 ```
 
@@ -306,7 +367,7 @@ Where $\sigma_u$ and $\sigma_{u'}$ indicate the standard deviation of the scores
 
 ```{r test_sd, cache = TRUE}
 
-preds <- test_batch(test, train, sd = TRUE, alpha = 3, mode = "exponential")
+preds <- test_batch(test, train, sd = TRUE, alpha = 0.005, mode = "exponential")
 
 RMSE <- sqrt(mean((preds$predicted - preds$true)^2))
 
@@ -315,3 +376,26 @@ RMSE
 ```
 
 We see a slight improvement, and our engine is a little over a point off on average.  Not terrible for a basic implementation, though one problem of note is that the process takes a non-trivial amount of computing time.  In practice, this may be an issue, and is one of the main reasons why Item-Item filtering is preferred in some cases.  Next, we can try manipulating the $\alpha$ parameter to see if it improves performance.  Additionally, we can change the form of the correlation drop-off to something with linear or exponential decay.
+```{r full matrix}
+
+###HOLD OUT SCORES FIRST, THEN CALCULATE SIMILARITY###
+
+###STORE SCORE, ITEM ID, AND REPLACE USER SCORE WITH NA####
+
+sim_matrices <- list()
+for(i in 1:nrow(elite)){
+  
+  
+  
+}
+
+
+```
+
+
+
+```{python}
+import numpy as np
+import feather
+
+```
