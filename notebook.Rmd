@@ -205,47 +205,67 @@ similarity <- function(user1, user2, alpha = 1, mode = "unweighted"){
   
 }
 
-predict_score <- function(user, df_train, itemID, sd = FALSE, alpha = 1, mode = "unweighted"){
+predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = FALSE, alpha = 1, mode = "unweighted"){
   
-  user <- user %>% 
-          rowwise() %>% 
-          mutate(n = sum(!is.na(.))) %>% 
-          ungroup() %>% 
-          mutate(mean = apply(user %>% select(-n), 1, mean, na.rm = TRUE), sd = apply(user %>% select(-n), 1, sd, na.rm = TRUE))
-
+  ##add mean and standard deviation column to users....
+  users <- users %>% 
+           rowwise() %>% 
+           mutate(n = sum(!is.na(.))) %>% 
+           ungroup() %>% 
+           mutate(mean = apply(users %>% select(-n), 1, mean, na.rm = TRUE), sd = apply(users %>% select(-n), 1, sd, na.rm = TRUE))
   
-  relevant_users <- df_train %>% filter(!is.na(!!sym(itemID))) 
-  #someone please tell me why the pipe must be broken here
+  ##...And training matrix
+  df_train <-  df_train %>%
+               rowwise() %>% 
+               mutate(n = sum(!is.na(.))) %>% 
+               ungroup() %>%
+               mutate(mean = apply(as.matrix(df_train %>% select(-n)), 1, mean, na.rm = TRUE), 
+               sd = apply(as.matrix(df_train %>% select(-n)), 1, sd, na.rm = TRUE)) %>%
+               filter(sd != 0)
   
+  ##BEGIN LOOP
+  preds <- 0
   
-  relevant_users <-  relevant_users %>%
-                              rowwise() %>% 
-                              mutate(n = sum(!is.na(.))) %>% 
-                              ungroup() %>%
-                              mutate(mean = apply(as.matrix(relevant_users %>% select(-n)), 1, mean, na.rm = TRUE), 
-                                     sd = apply(as.matrix(relevant_users %>% select(-n)), 1, sd, na.rm = TRUE)) %>%
-                                      filter(sd != 0)
-  
-  #we must do this part of the dplyr pipe seperately due to having to call the data frame within apply()   
-  relevant_users <- relevant_users %>% 
-    mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user2 = user, alpha = alpha, mode = mode))
-  
-  if(sd){
-    predict = user$mean + 
-              user$sd*sum(relevant_users$simscore*((relevant_users %>% select(itemID))-relevant_users$mean)/relevant_users$sd)/
+  for(i in 1:length(itemID)){
+    relevant_users <- df_train %>% filter(!is.na(!!sym(itemID[i]))) 
+    
+    ###compare similarity to user at index 
+    if(is.null(sim_matrix)){
+      relevant_users <- relevant_users %>% 
+                        mutate(simscore = apply(relevant_users %>% select(c(-n, -mean, -sd)), 1, similarity, user2 = users[i,], alpha = alpha, mode = mode))
+      
+      if(sd){
+        preds[i] = users[i,]$mean + 
+              users[i,]$sd*sum(relevant_users$simscore*((relevant_users %>% select(itemID[i]))-relevant_users$mean)/relevant_users$sd)/
               sum(abs(relevant_users$simscore))  
-  }
-  else{
-    predict = user$mean + 
-              sum(relevant_users$simscore*((relevant_users %>% select(itemID))-relevant_users$mean))/
+            }
+      else{
+        preds[i] = users[i,]$mean + 
+              sum(relevant_users$simscore*((relevant_users %>% select(itemID[i]))-relevant_users$mean))/
               sum(abs(relevant_users$simscore)) 
+        }
+    }
+    else{
+      print("whoops, were here")
+        ######USE PRE-CALCULATED SIMILARITY MATRIX HERE#####
+        }
   }
   
-  return(predict)
+  return(preds)
+  
 }
 
+###################################################################
+###################################################################
 
-user_similarity <- function(usermatrix, alpha = 1, mode = "unweighted"){
+###################################################################
+################FOR PRE SIMILARITY SCORE CALCULATIONS##############
+###################################################################
+
+#'@param df A dataframe where the rows represent users and the named columns are items.  Each element holds a numeric rating. 
+#'@param alpha Smoothing parameter which determined the degree to which users with a different number of total ratings are more/less similar.  Default to 1.
+#'@param mode Method for determining how similarity decays as difference in number of ratings between two users increases.  Default to unweighted(does nothing)
+user_similarity_matrix <- function(usermatrix, alpha = 1, mode = "unweighted"){
   sim_matrix <- matrix(0, nrow(usermatrix), nrow(usermatrix))
   
   for(i in 1:(nrow(usermatrix)-1)){
@@ -262,8 +282,6 @@ user_similarity <- function(usermatrix, alpha = 1, mode = "unweighted"){
 }
 
 
-simmat <- user_similarity(elite_sparse[1:100,-1])
-
 ###
 #'@param df A dataframe where the rows represent users and the named columns are items.  Each element holds a numeric rating.  This should be a dataframe of the -subset- of users whose scores you want to predict.
 #'@param mode Whether the values to be held out and predicted should be randomly selected or selected from a list of values.  Can be set to 'random' or 'list'.
@@ -274,26 +292,28 @@ get_targets <- function(df, mode = "random", target_vector = NULL, return_reduce
   true <- 0
   item <- NA
   
-  if(mode = "random"){
-    for(i in nrow(df)){
+  if(mode == "random"){
+    for(i in 1:nrow(df)){
       #get a random column which is not empty
         #get the name of that column
         #store these in "true" and "item" respectively
         index <- sample(which(!is.na(df[i,])), 1)
-      
+        
         true[i] <- df[i,index][[1]] 
-        item[i] <- colnames(df[,index])
+        item[i] <- as.character(colnames(df[,index]))
         
         df[i, item[i]] <- NA
     }
     
-    return(cbind(item, true,df))
+    df = cbind.data.frame(item,true, df)
+    df$item <- as.character(df$item)
     
+    return(df)
   }
-  else if(mode = "selected"){
-    
-    for(i in nrow(df)){
-      
+  
+  else if(mode == "selected"){
+    ###Select from a preselected list of holdout items.
+    for(i in 1:nrow(df)){
       true[i] <- df[i, target_vector[i]][[1]]
       df[i, target_vector[i]] <- NA
     }
@@ -305,31 +325,7 @@ get_targets <- function(df, mode = "random", target_vector = NULL, return_reduce
 ###FOR MATTS DATA, THIS SHOULD STILL WORK####
 ###THE SELECTED DATA WILL EXTRACTED BY AN INNER JOIN AND THEN PASSED TO THIS FUNCTION###
 
-test_batch <- function(test, train, ...){  
-  pred <- true <- 0
-  item <- NA
-  
-  for(i in 1:nrow(test)){
-        #get a random column which is not empty
-        #get the name of that column
-        #store these in "true" and "item" respectively
-        index <- sample(which(!is.na(test[i,])), 1)
-      
-        true[i] <- test[i,index][[1]] 
-        item[i] <- colnames(test[,index])
-        
-        foo <- test[i,]
-        foo[item[i]] <- NA
-        
-        pred[i] <- predict_score(foo, train, item[i], ...) 
-        
-        
-    }
-  
- 
-  return(data.frame(predicted = pred, true = true, itemID = item))
 
-}
 
 ```
 
@@ -337,11 +333,14 @@ We will randomly select 20% of the elite users and use them as the test cases.  
 
 ```{r test_nosd, message = FALSE, cache = TRUE}
 
-indices <- sample(1:nrow(elite_sparse), floor(.2*nrow(elite_sparse)))
+indices <- sample(1:nrow(elite_sparse), floor(.1*nrow(elite_sparse)))
   
 test <- elite_sparse[indices, -1]
+test <- get_targets(test)
 train <- elite_sparse[-indices, -1]
-  
+
+predict_score(test[c(-1,-2)], elite_sparse, itemID = test$item)  
+
 preds <- test_batch(test, train)
 
 head(preds) %>% kable("html") %>% 
