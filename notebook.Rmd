@@ -1,9 +1,9 @@
 ---
 title: "PCA and User-User Collaborative Filtering for Boardgame Ratings Data"
 output:
-  html_notebook: default
   html_document:
     code_folding: hide
+  html_notebook: default
 ---
 
 
@@ -31,8 +31,6 @@ elite <- read_csv("Data/boardgame-elite-users.csv") %>% rename(userID = `Compile
 titles <- read_csv("Data/boardgame-titles.csv") %>% rename(gameID = `boardgamegeek.com game ID`)
 
 allusers <- read_csv("Data/boardgame-users.csv")
-
-test <- test %>% inner_join(elite_sparse)
 
 elite[1:5,] %>% kable("html") %>%
                 kable_styling(full_width = FALSE, position = "left", bootstrap_options = c("striped", "hover"))
@@ -170,15 +168,15 @@ We will now attempt to build a recommendation engine for the elite user data.  T
 
 The similarity between two users will be determined by calculating a scaled Pearson's Correlation coefficient:
 
-$$s(u,v)=\frac{1}{\vert{D_{u,v}(N)\vert}^\alpha}{\huge[}\frac{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u})(r_{v,i}-\overline{r}_{v})}{\sqrt{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u})^2}\sqrt{\sum_{i\in I_{common}}(r_{v,i}-\overline{r}_{v})^2}}+1{\huge]}$$
+$$s(u,v)=f(\vert{D_{u,v}(N)\vert}^\alpha){\huge[}\frac{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u})(r_{v,i}-\overline{r}_{v})}{\sqrt{\sum_{i\in I_{common}}(r_{u,i}-\overline{r}_{u})^2}\sqrt{\sum_{i\in I_{common}}(r_{v,i}-\overline{r}_{v})^2}}+1{\huge]}$$
 Where $r_{u,i}$ and $\overline{r}_{u}$ are user $u$'s rating for item $i$ and $u$'s average rating across *all* items respectively.  $I_{common}$ denotes the set of all items that $u$ and $v$ have both rated.  $\vert D_{u,v}(N)\vert$ is the absolute difference in the number of ratings between user $u$ and $v$.  I include this adjustment under the suspicion that users who rate a lot of games tend form a group that rates games similarly.  The parameter $\alpha$ controls the magnitude of this effect and will be optimized for predictive power later.  For now, we will perform the analysis assuming $\alpha = 1$
 
-We will write three functions to do our predictions.  The first, `similarity(user1, user2)`, computes the similarity score between two users.  The second, `predict_score(test, train, itemID)` predicts a score given a user, training data, and an item ID.  The formula begins with the user-in-question's average rating, and moves up or down depending on other users rating of the game in question weighted by the similarity score:
+We will write three functions to do our predictions.  The first, `similarity(user1, user2)`, computes the similarity score between two users.  The second, `predict_score(test, train, itemID)` predicts scores(shocking, I know) given a user or batch of users, training data, and an item ID.  The formula begins with the user-in-question's average rating, and moves up or down depending on other users rating of the game in question weighted by the similarity score:
 
 $$p_{u,i} = \overline{r}_u+\frac{\sum_{u'\in U'}s(u,u')(r_{u',i}-\overline{r}_{u'})}{\sum_{u'\in U'}\vert s(u,u')\vert}$$
 where $p_{u,i}$ is the predicted score for user $u$ and item $i$, $\overline{r}_u$ is the average score for user $u$.  $U'$ and $u'$ indicate the set of all *other* users and an individual *other* user respectively.
 
-The last function, `test_batch(test, train)`, loops over a batch of test cases.  For each test case, it randomly selects an item with a rating and holds it out, and then attempts to predict the score for that item using `predict_score()`.  At the end of the loop a dataframe containing the predicted/true values and the item ID will be returned.
+The predictions can be set to either construct the similarity matrix for each user, or pull similarity scores from a pre-calculated similarity matrix among *all* users.  The function user_similarity_matrix computes this matrix.  Depending on the size of the batch and the number of total users, the process of obtaining predictions can take a **very** long time; when making the jump to all users rather than just the elite users, we will have to select a random subset to compare a user of interest to.  
 
 ```{r functions, message = FALSE, warning = FALSE, comment = FALSE}
 
@@ -188,19 +186,20 @@ similarity <- function(user1, user2, alpha = 1, mode = "unweighted"){
   
   diff <- sum(!is.na(user1)) - sum(!is.na(user2))
   
-  if(mode == "inverse power"){
-    score = 1/(abs(diff)+1)^alpha*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
-  }
-  else if(mode == "exponential"){
-    score = exp(-abs(diff)*alpha)*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
-  }
-  else if(mode == "linear"){
-    score = alpha/(abs(diff)+1)*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
-  }
-  else if(mode == "unweighted"){
-    score = cor(as.matrix(df)[1,], as.matrix(df)[2,])
-  }
-    
+  suppressWarnings(
+    if(mode == "inverse power"){
+      score = 1/(abs(diff)+1)^alpha*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
+    }
+    else if(mode == "exponential"){
+      score = exp(-abs(diff)*alpha)*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
+    }
+    else if(mode == "linear"){
+      score = alpha/(abs(diff)+1)*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
+    }
+    else if(mode == "unweighted"){
+      score = cor(as.matrix(df)[1,], as.matrix(df)[2,])
+    }
+  )    
   return(score)
   
 }
@@ -212,7 +211,7 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
   users <- users %>%
            mutate(n = apply(users[,-1],1,function(x) sum(!is.na(x))),
                   mean = apply(users[,-1], 1, mean, na.rm = TRUE), 
-                  sd = apply(users[,-1], 1, sd, na.rm = TRUE))
+                  sd = apply(users[,-1], 1, sd, na.rm = TRUE)) 
   
   ##...And training matrix
   df_train <- df_train %>%
@@ -221,17 +220,20 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
                 sd = apply(df_train[,-1], 1, sd, na.rm = TRUE)) %>%
                 filter(sd != 0)
   
-  ##BEGIN LOOP
-  preds <- 0
   
-    ###compare similarity to user at index 
+  ################
+  #BEGIN LOOP
+  ################
+  preds <- 0
+
+  ###compare similarity to user at index 
   if(is.null(sim_matrix)){
+    
+    for(i in 1:length(itemID)){
+    relevant_users <- df_train %>% filter(!is.na(!!sym(itemID[i])), userID != users[i,1][[1]]) 
     
     relevant_users <- relevant_users %>% 
                       mutate(simscore = apply(relevant_users %>% select(c(-1, -n, -mean, -sd)), 1, similarity, user2 = users[i,], alpha = alpha, mode = mode))
-    
-    for(i in 1:length(itemID)){
-    relevant_users <- df_train %>% filter(!is.na(!!sym(itemID[i]))) 
     
       if(sd){
         preds[i] = users[i,]$mean + 
@@ -245,10 +247,12 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
       }
     }
   }
+  
+  ###SECTION FOR PRE-CALCULATED SIMILARITY MATRIX###
   else{
     
     for(i in 1:length(itemID)){
-    relevant_users <- df_train %>% filter(!is.na(!!sym(itemID[i]))) 
+    relevant_users <- df_train %>% filter(!is.na(!!sym(itemID[i])), userID != users[i,1][[1]]) 
     
     sims <- sim_matrix %>% filter(userID %in% relevant_users[,1][[1]], userID != users[i,1]) %>%
                            select(as.character(users[i,1])) %>% 
@@ -261,7 +265,7 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
       }
       else{
         preds[i] = users[i,]$mean + 
-              users[i,]$sd*sum((relevant_users %>% select(itemID[i]))-relevant_users$mean)/
+              sum((relevant_users %>% select(itemID[i]))-relevant_users$mean)/
               sum(abs(sims))  
       }
     
@@ -274,9 +278,6 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
   return(preds)
   
 }
-
-preds <- predict_score(test[c(-1,-2)], elite_sparse, sim_matrix = testmatrix, itemID = test$item)  
-
 ###################################################################
 ###################################################################
 
@@ -284,9 +285,10 @@ preds <- predict_score(test[c(-1,-2)], elite_sparse, sim_matrix = testmatrix, it
 ################FOR PRE SIMILARITY SCORE CALCULATIONS##############
 ###################################################################
 
-#'@param df A dataframe where the rows represent users and the named columns are items.  Each element holds a numeric rating. 
+#'@param usermatrix A dataframe where the rows represent users and the named columns are items.  Each element holds a numeric rating.
+#'@param userIDs A vector of user ID's which correspond to each row of the usermatrix.
 #'@param alpha Smoothing parameter which determined the degree to which users with a different number of total ratings are more/less similar.  Default to 1.
-#'@param mode Method for determining how similarity decays as difference in number of ratings between two users increases.  Default to unweighted(does nothing)
+#'@param mode Method for determining how similarity decays as difference in number of ratings between two users increases.  Default to unweighted\(does nothing\)
 user_similarity_matrix <- function(usermatrix, userIDs, alpha = 1, mode = "unweighted"){
   
   options(warn = -1)
@@ -325,7 +327,7 @@ get_targets <- function(df, mode = "random", target_vector = NULL, return_reduce
       #get a random column which is not empty
         #get the name of that column
         #store these in "true" and "item" respectively
-        index <- sample(which(!is.na(df[i,])), 1)
+        index <- sample(which(!is.na(df[i,-1])), 1)+1
         
         true[i] <- df[i,index][[1]] 
         item[i] <- as.character(colnames(df[,index]))
@@ -353,48 +355,32 @@ get_targets <- function(df, mode = "random", target_vector = NULL, return_reduce
 ###FOR MATTS DATA, THIS SHOULD STILL WORK####
 ###THE SELECTED DATA WILL EXTRACTED BY AN INNER JOIN AND THEN PASSED TO THIS FUNCTION###
 
-
-
 ```
 
-We will randomly select 20% of the elite users and use them as the test cases.  The rest will be used alongside each individual test case to calculate a predicted score.  
+We will randomly select 20% of the elite users and use them as the test cases.  First, we'll try without the standard deviation and no scaling of the similarity score (similarity is just the correlation)
 
-```{r test_nosd, message = FALSE}
+To see how our engine did, we can look at the root mean squared error of our predictions.  This is the root of the average squared difference between the predicted and true values:  $RMSE = \sqrt{\frac{1}{U_{test}}\sum_u(p_{u,i}-r_{u,i})^2}$ where $U_{test}$ is the number of users in the test set.
 
+```{r testing_area_no_sd, message = FALSE, cache = TRUE}
 indices <- sample(1:nrow(elite_sparse), floor(.1*nrow(elite_sparse)))
   
 test <- elite_sparse[indices,]
-test <- get_targets(test)
-testmatrix <- user_similarity_matrix(elite_sparse, elite_sparse$userID, alpha = 0.1, mode = "exponential")
+targetlist <- get_targets(test)
 
-train <- elite_sparse[-indices,]
+preds <- predict_score(targetlist[,c(-1,-2)], elite_sparse, itemID = targetlist$item, sd = FALSE)  
 
-train <- train %>%
-              mutate(n = apply(train[,-1],1,function(x) sum(!is.na(x))),
-              mean = apply(train[,-1], 1, mean, na.rm = TRUE), 
-              sd = apply(train[,-1], 1, sd, na.rm = TRUE)) %>%
-              filter(sd != 0)
-
-preds <- predict_score(test[c(-1,-2)], elite_sparse, sim_matrix = testmatrix, itemID = test$item)  
-
-sqrt(mean((test$true-preds)^2))
-
-head(preds) %>% kable("html") %>% 
+head(cbind(targetlist[c(1,3,2)], preds)) %>% kable("html") %>% 
                             kable_styling(full_width = FALSE, position = "left", 
                                           bootstrap_options = c("striped", "hover", "responsive"))
-```
 
-To see how our engine did, we can look at the root mean squared error of our predictions.  This is the root of the average squared difference between the predicted and true values:  $RMSE = \sqrt{\frac{1}{U_{test}}\sum_u(p_{u,i}-r_{u,i})}$
-
-```{r RMSE, echo = TRUE}
-
-RMSE <- sqrt(mean((preds$predicted - preds$true)^2))
+RMSE <- sqrt(mean((preds - targetlist$true)^2))
 
 RMSE
 
+
 ```
 
-On average, our predictions are off by almost one and a half points, not particularly impressive.  To improve performance, we can scale the difference for each user score from their mean by the standard deviation of that users ratings:
+On average, our predictions are off by `r RMSE` points, not particularly impressive.  To try and improve performance, we can scale the difference for each user score from their mean by the standard deviation of that user's ratings:
 
 $$p_{u,i} = \overline{r}_u+\sigma_u\frac{\sum_{u'\in U'}s(u,u')(r_{u',i}-\overline{r}_{u'})/\sigma_{u'}}{\sum_{u'\in U'}\vert s(u,u')\vert}$$
 
@@ -402,35 +388,77 @@ Where $\sigma_u$ and $\sigma_{u'}$ indicate the standard deviation of the scores
 
 ```{r test_sd, cache = TRUE}
 
-preds <- test_batch(test, train, sd = TRUE, alpha = 0.005, mode = "exponential")
+preds <- predict_score(targetlist[,c(-1,-2)], elite_sparse, itemID = targetlist$item, sd = TRUE)  
 
-RMSE <- sqrt(mean((preds$predicted - preds$true)^2))
+RMSE <- sqrt(mean((preds- targetlist$true)^2))
 
 RMSE
 
 ```
 
-We see a slight improvement, and our engine is a little over a point off on average.  Not terrible for a basic implementation, though one problem of note is that the process takes a non-trivial amount of computing time.  In practice, this may be an issue, and is one of the main reasons why Item-Item filtering is preferred in some cases.  Next, we can try manipulating the $\alpha$ parameter to see if it improves performance.  Additionally, we can change the form of the correlation drop-off to something with linear or exponential decay.
-```{r full matrix}
+We actually see a slight decrease in RMSE, and our engine is still a little over a point off on average.  Scaling in this case may not be a good strategy, as our features are already all on relatively the same scale.  Either way, this is not terrible for a basic implementation, though one problem of note is that the process takes a non-trivial amount of computing time.  In practice, this may be an issue, and is one of the main reasons why Item-Item filtering is preferred in some cases.  
 
-###HOLD OUT SCORES FIRST, THEN CALCULATE SIMILARITY###
+However, while we have this algorithm set up in code, we should try to work with what we have and see what we can do to overcome the problem of computing time.  The most straightforward method is to pre-compute the similarity scores between *all* users before doing our predictions.  This will allow us to more efficiently perform K-fold cross validation on our model, as the accuracy of our scores tends to vary greatly.  We'll average RMSE scores over 50 random samples of 20% of the data.
 
-###STORE SCORE, ITEM ID, AND REPLACE USER SCORE WITH NA####
+```{r precalculated matrix, no weighting}
+sim_mat <- read_csv("Data/sim_mat_elite.csv")
 
-sim_matrices <- list()
-for(i in 1:nrow(elite)){
+kpreds <- list()
+
+for(i in 1:15){
+  indices <- sample(1:nrow(elite_sparse), floor(.1*nrow(elite_sparse)))
   
-  
-  
+  test <- elite_sparse[indices,]
+  targetlist <- get_targets(test)
+
+  kpreds[[i]] <- cbind(targetlist[c(1,3,2)], predicted = predict_score(targetlist[,c(-1,-2)], elite_sparse, sim_matrix = sim_mat, itemID = targetlist$item))
+
 }
 
+scores <- 0
+
+for(i in 1:15){
+  scores[i] <- sqrt(mean((kpreds[[i]]$true-kpreds[[i]]$predicted)^2))
+}
+
+mean(scores, na.rm = TRUE)
+```
+
+On average, we are off by around `r mean(scores, na.rm = TRUE)` points, judge this performance how you will.
+
+Next, we can try manipulating the $\alpha$ parameter to see if it improves performance.  Additionally, we can change the form of the correlation drop-off to something with linear or exponential decay.
+```{r full matrix}
+
+sim_mat <- read_csv("Data/sim_mat_elite_exp_001.csv")
+
+kpreds <- list()
+
+for(i in 1:15){
+  indices <- sample(1:nrow(elite_sparse), floor(.1*nrow(elite_sparse)))
+  
+  test <- elite_sparse[indices,]
+  targetlist <- get_targets(test)
+
+  kpreds[[i]] <- cbind(targetlist[c(1,3,2)], predicted = predict_score(targetlist[,c(-1,-2)], elite_sparse, sim_matrix = sim_mat, itemID = targetlist$item))
+
+}
+
+scores <- 0
+
+for(i in 1:15){
+  scores[i] <- sqrt(mean((kpreds[[i]]$true-kpreds[[i]]$predicted)^2))
+}
+
+mean(scores, na.rm = TRUE)
 
 ```
 
-
+We see a modest improvement.
 
 ```{python}
 import numpy as np
 import feather
+
+df = feather.read_dataframe("Data/sim_mat.feather")
 
 ```
