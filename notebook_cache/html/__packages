@@ -16,3 +16,5 @@ ggthemr
 gridExtra
 rlang
 bindrcpp
+stringr
+forcats

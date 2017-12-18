@@ -1,6 +1,4 @@
 library(tidyverse)
-library(readr)
-library(wordcloud2)
 library(Matrix)
 library(reshape2)
 library(missMDA)

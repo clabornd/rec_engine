@@ -6,8 +6,13 @@ output:
   html_notebook: default
 ---
 
+```{r setup}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
 
-**Credit to Matthew Borthwick for scraping and providing this data.**  
+```
+
+
+**Thanks to Matthew Borthwick for scraping and providing this data at:  dive-into.info.**  
 **Data Source:  boardgamegeek.com**
 
 The data in question are user ratings for boardgames.  This notebook covers the cleaning/reshaping of the data, principal component analysis, and ratings prediction with User-User collaborative filtering.
@@ -22,7 +27,6 @@ Our tasks are as follows:
 Lets first download the data and take a look.
 
 ```{r summary, results = 'asis'}
-
 source("requirements.R")
 ggthemr("dust")
 
@@ -139,7 +143,7 @@ ncol = 3
 
 We can look at the top 10 loadings for each principal component and see what kinds of games are included to see if they describe some sort of genre or series of games.
 
-```{r top_n, warning = FALSE, message = FALSE}
+```{r top_n}
 
 cbind(top_n(components, 10, PC1) %>% arrange(desc(PC1)) %>% select(PC1, title),
       top_n(components, 10, PC2) %>% select(PC2, title),
@@ -152,7 +156,7 @@ Looking at the descriptions for the lists of games, there does not appear to be 
 
 A quick plot of the cumulative explained variance from each component shows greatly diminshed returns after the 6th or so PC.  The variance explained by the first PC is significantly greater than the rest.
 
-```{r explvar, warning = FALSE, message = FALSE}
+```{r explvar}
 explained_variance <- PCA$sdev^2/sum(PCA$sdev^2)
 
 qplot(0:199, c(0,cumsum(explained_variance))) + xlab("Principal Component #") + ylab("Cumulative Explained Variance")
@@ -178,7 +182,7 @@ where $p_{u,i}$ is the predicted score for user $u$ and item $i$, $\overline{r}_
 
 The predictions can be set to either construct the similarity matrix for each user, or pull similarity scores from a pre-calculated similarity matrix among *all* users.  The function user_similarity_matrix computes this matrix.  Depending on the size of the batch and the number of total users, the process of obtaining predictions can take a **very** long time; when making the jump to all users rather than just the elite users, we will have to select a random subset to compare a user of interest to.  
 
-```{r functions, message = FALSE, warning = FALSE, comment = FALSE}
+```{r functions}
 
 similarity <- function(user1, user2, alpha = 1, mode = "unweighted"){
   df <- rbind(user1, user2)
@@ -187,7 +191,10 @@ similarity <- function(user1, user2, alpha = 1, mode = "unweighted"){
   diff <- sum(!is.na(user1)) - sum(!is.na(user2))
   
   suppressWarnings(
-    if(mode == "inverse power"){
+    if(is.na(cor(as.matrix(df)[1,], as.matrix(df)[2,]))){
+      score = 0
+    }
+    else if(mode == "inverse power"){
       score = 1/(abs(diff)+1)^alpha*(cor(as.matrix(df)[1,], as.matrix(df)[2,]))
     }
     else if(mode == "exponential"){
@@ -205,7 +212,7 @@ similarity <- function(user1, user2, alpha = 1, mode = "unweighted"){
 }
 
 
-predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE, alpha = 1, mode = "unweighted"){
+predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE, alpha = 1, mode = "unweighted", subset = FALSE){
   
   ##add mean and standard deviation column to users....
   users <- users %>%
@@ -220,7 +227,6 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
                 sd = apply(df_train[,-1], 1, sd, na.rm = TRUE)) %>%
                 filter(sd != 0)
   
-  
   ################
   #BEGIN LOOP
   ################
@@ -232,8 +238,13 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
     for(i in 1:length(itemID)){
     relevant_users <- df_train %>% filter(!is.na(!!sym(itemID[i])), userID != users[i,1][[1]]) 
     
+      if(subset){
+        relevant_users <- relevant_users %>% sample_n(subset)
+      }
+    
     relevant_users <- relevant_users %>% 
-                      mutate(simscore = apply(relevant_users %>% select(c(-1, -n, -mean, -sd)), 1, similarity, user2 = users[i,], alpha = alpha, mode = mode))
+                      mutate(simscore = apply(relevant_users %>% select(c(-1, -n, -mean, -sd)), 
+                                          1, similarity, user2 = users[i,], alpha = alpha, mode = mode))
     
       if(sd){
         preds[i] = users[i,]$mean + 
@@ -245,12 +256,15 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
               sum(relevant_users$simscore*((relevant_users %>% select(itemID[i]))-relevant_users$mean))/
               sum(abs(relevant_users$simscore)) 
       }
+    
+   
+    
+    
     }
   }
   
   ###SECTION FOR PRE-CALCULATED SIMILARITY MATRIX###
   else{
-    
     for(i in 1:length(itemID)){
     relevant_users <- df_train %>% filter(!is.na(!!sym(itemID[i])), userID != users[i,1][[1]]) 
     
@@ -278,6 +292,7 @@ predict_score <- function(users, df_train, sim_matrix = NULL, itemID, sd = TRUE,
   return(preds)
   
 }
+
 ###################################################################
 ###################################################################
 
@@ -298,7 +313,7 @@ user_similarity_matrix <- function(usermatrix, userIDs, alpha = 1, mode = "unwei
   for(i in 1:(nrow(usermatrix)-1)){
     for(j in (i+1):nrow(usermatrix)){
       sim_matrix[i,j] <- sim_matrix[j,i] <- similarity(usermatrix[i,-1], usermatrix[j,-1], alpha = alpha, mode = mode)
-      
+      print(c(i,j))
     }
   }
   
@@ -361,7 +376,7 @@ We will randomly select 20% of the elite users and use them as the test cases.  
 
 To see how our engine did, we can look at the root mean squared error of our predictions.  This is the root of the average squared difference between the predicted and true values:  $RMSE = \sqrt{\frac{1}{U_{test}}\sum_u(p_{u,i}-r_{u,i})^2}$ where $U_{test}$ is the number of users in the test set.
 
-```{r testing_area_no_sd, message = FALSE, cache = TRUE}
+```{r testing_area_no_sd, cache = TRUE}
 indices <- sample(1:nrow(elite_sparse), floor(.1*nrow(elite_sparse)))
   
 test <- elite_sparse[indices,]
@@ -400,7 +415,12 @@ We actually see a slight decrease in RMSE, and our engine is still a little over
 
 However, while we have this algorithm set up in code, we should try to work with what we have and see what we can do to overcome the problem of computing time.  The most straightforward method is to pre-compute the similarity scores between *all* users before doing our predictions.  This will allow us to more efficiently perform K-fold cross validation on our model, as the accuracy of our scores tends to vary greatly.  We'll average RMSE scores over 50 random samples of 20% of the data.
 
-```{r precalculated matrix, no weighting}
+```{r precalculated matrix no weighting}
+## Not run, takes a while. .csv file is pre baked
+
+# sim_mat <- user_similarity_matrix(targetlist[,c(-1,-2)], userIDs = targetlist$userID)
+# write_csv(sim_mat, "Data/sim_mat_elite.csv")
+
 sim_mat <- read_csv("Data/sim_mat_elite.csv")
 
 kpreds <- list()
@@ -428,6 +448,11 @@ On average, we are off by around `r mean(scores, na.rm = TRUE)` points, judge th
 
 Next, we can try manipulating the $\alpha$ parameter to see if it improves performance.  Additionally, we can change the form of the correlation drop-off to something with linear or exponential decay.
 ```{r full matrix}
+## Not run, takes a while. .csv file is pre baked
+
+# sim_mat <- user_similarity_matrix(targetlist[,c(-1,-2)], userIDs = targetlist$userID, alpha = 0.01, mode = "exponential")
+# write_csv(sim_mat, "Data/sim_mat_elite.csv")
+
 
 sim_mat <- read_csv("Data/sim_mat_elite_exp_001.csv")
 
@@ -453,12 +478,33 @@ mean(scores, na.rm = TRUE)
 
 ```
 
-We see a modest improvement.
+We see a marginal improvement.  Matt Borthwick held out some scores from the provided data, lets see how our basic algorithm performs.
+
+As is, our predictions would take a **very** long time to churn out.  My solution is to select, for every user, a random subset of 50 users to use for similarity comparison.  Even with this adjustment, my (admittedly lower-range computer) takes 2 hours to compute all 14,000 ish predictions, just imagine the computing time if we compared every user to ~14,000 other users instead of 50.  Precalculating the full 14,000 x 14,000 similarity matrix is *somewhat* less time consuming.  
+
+```{r}
+test_matt <- read_csv("Data/boardgame-users-test.csv")
+allusers <- read_csv("Data/boardgame-users.csv")
+allusers_sparse <- allusers %>%
+                   rename(userID = `Compiled from boardgamegeek.com by Matt Borthwick`) %>%
+                   select(userID, gameID, rating) %>%
+                   spread(gameID, rating)
+
+test_cases <- test_matt %>% select(userID) %>% left_join(allusers_sparse)
+
+##TAKES A WHILE##
+#preds <- predict_score(test_cases, allusers_sparse, itemID = as.character(test_matt$gameID), alpha = 0.01, mode = "exponential", subset = 50)
+
+#preds[which(is.na(preds))] <- apply(test_cases[which(is.na(preds)),-1], 1, mean, na.rm=TRUE)
+#write_csv(cbind(test_matt, preds), "Data/fullpreds_01_exp001.csv")
+
+```
+
+After upload, our RMSE is ~1.36.  Again, not terrible for this simple implementation.  The most effective algorithms included decision tree methods and ALS(alternating least squares), the latter of which is somewhat of a standard in recommender systems.
 
 ```{python}
 import numpy as np
 import feather
 
 df = feather.read_dataframe("Data/sim_mat.feather")
-
 ```
